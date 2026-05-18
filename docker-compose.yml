@@ -1,0 +1,109 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orderflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-orderflow}
+      POSTGRES_USER: ${DB_USERNAME:-orderflow}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-orderflow_pass}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - '${DB_PORT:-5432}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USERNAME:-orderflow} -d ${DB_NAME:-orderflow}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - orderflow-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: orderflow-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - orderflow-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    container_name: orderflow-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3001
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME:-orderflow}
+      DB_PASSWORD: ${DB_PASSWORD:-orderflow_pass}
+      DB_NAME: ${DB_NAME:-orderflow}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      JWT_SECRET: ${JWT_SECRET:-change-this-in-production-jwt-secret}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-this-in-production-refresh-secret}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-noreply@orderflow.com}
+    ports:
+      - '3001:3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - orderflow-network
+    volumes:
+      - ./backend/logs:/app/logs
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001/api/v1}
+    container_name: orderflow-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001/api/v1}
+      API_URL: http://backend:3001
+    ports:
+      - '3000:3000'
+    depends_on:
+      - backend
+    networks:
+      - orderflow-network
+
+networks:
+  orderflow-network:
+    driver: bridge
+    name: orderflow-network
+
+volumes:
+  postgres_data:
+    name: orderflow-postgres-data
+  redis_data:
+    name: orderflow-redis-data
